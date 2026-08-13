@@ -79,8 +79,10 @@ startRum({
   ingestUrl: process.env.NEXT_PUBLIC_ONEPATCH_INGEST_URL!,
   ingestToken: process.env.NEXT_PUBLIC_ONEPATCH_INGEST_TOKEN!,
   appName: "<service>-web",
-  environment: process.env.NEXT_PUBLIC_VERCEL_ENV ?? "development",
-  appVersion: process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA!,
+  // On Vercel these two come free as NEXT_PUBLIC_VERCEL_ENV and
+  // NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA. Elsewhere, define them in the build.
+  environment: process.env.NEXT_PUBLIC_APP_ENV!,
+  appVersion: process.env.NEXT_PUBLIC_COMMIT_SHA!,
   connectTracesTo: [/* phase 5 decides this — leave it out until then */],
 });
 ```
