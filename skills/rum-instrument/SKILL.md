@@ -31,6 +31,8 @@ Identify the browser surface and how it boots:
 
 A monorepo can hold several frontends. Do one, and say which you picked before writing anything.
 
+Find how it knows who is signed in at the same time — the session hook, the auth context, the `me` query. Phase 3 can't be written without it, which is deliberate.
+
 ## 2. Get the ingest configuration
 
 You need an `ingestUrl` shaped `https://<slug>.logger.onepatch.dev` and an `op_…` `ingestToken`. Three paths, in order:
@@ -44,13 +46,14 @@ You need an `ingestUrl` shaped `https://<slug>.logger.onepatch.dev` and an `op_�
 ## 3. Install and initialise
 
 ```sh
-bun add @onepatch/rum   # or npm / pnpm / yarn
+bun add @onepatch/rum   # or npm / pnpm / yarn — 0.2.0 or newer
 ```
 
 Placement, three rules: **once** per page load (twice is a warning and a wasted call); **client-side** (it no-ops outside a browser, so a server-rendered import is safe, but the call belongs on a client path); **early**, before the app's own `fetch` calls.
 
-Three values decide whether the data is usable in a month:
+Four values decide whether the data is usable in a month:
 
+- **`user` is who is using the app.** Required — `startRum` will not compile without it, because identity as a second call is a second call somebody forgets. Phase 4 picks its shape; put a resolver in now.
 - **`appName` is `<service>-web`.** If the backend is `acme-api`, this is `acme-web`. It becomes `service.name` — the first column of the sort key and what the service map draws, so an unrelated name files the two halves of one trace in two unrelated places.
 - **`environment` comes from wherever the backend reads its own.** Not a hand-typed `"production"` in a file that gets copied to staging. Disagreeing halves make every env-filtered query return half a trace, and each half looks fine alone.
 - **`appVersion` is the commit sha.** Every build system has one: `NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA`, `VITE_COMMIT_SHA` fed from `$GITHUB_SHA`, `git rev-parse --short HEAD`. It becomes `service.version`, which turns "errors went up at 14:20" into "errors went up on this deploy". No sha available? Wire one in — that is this phase, not a follow-up.
@@ -68,6 +71,7 @@ startRum({
   // NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA. Elsewhere, define them in the build.
   environment: process.env.NEXT_PUBLIC_APP_ENV!,
   appVersion: process.env.NEXT_PUBLIC_COMMIT_SHA!,
+  user: async () => (await getSession())?.user ?? null, // phase 4
   connectTracesTo: [/* phase 5 decides this — leave it out until then */],
 });
 ```
@@ -78,17 +82,28 @@ startRum({
 
 ## 4. Wire identity — the highest-value five minutes
 
-A session with no user answers almost nothing. Find where the app already knows who is signed in — grep for `analytics.identify(`, `posthog.identify(`, `Sentry.setUser(`, `datadogRum.setUser(`, or the auth provider's `onAuthStateChange` / `useUser` / session context — and call `identifyUser` on that same path:
+A session with no user answers almost nothing, so identity is the `user` option rather than a follow-up call. Find where the app already knows who is signed in — grep for `analytics.identify(`, `posthog.identify(`, `Sentry.setUser(`, `datadogRum.setUser(`, or the auth provider's `onAuthStateChange` / `useUser` / session context — and pass whichever of these three shapes matches what that path can give you at boot:
 
 ```ts
-import { identifyUser } from "@onepatch/rum";
-
-identifyUser({ email: user.email, id: user.id, orgId: user.orgId, plan: user.plan });
+user: { id: session.userId, email: session.email }  // already known synchronously
+user: async () => (await me())?.user ?? null        // known shortly; awaited once
+user: "anonymous"                                   // no sign-in exists in this app
 ```
 
-`id`, `email`, `name`, `orgId`, `orgName` become the conventional `user.*` / `org.*` attributes; anything else passes through under the key you wrote.
+A resolver returning `null` is honest and telemetry still flows — a login page, a cold load before the session request lands. `(await startRum(...)).identified` tells you which happened. Pick `"anonymous"` only for an app with no accounts at all; on a signed-in app it is how you ship RUM with no U in it.
 
-Call it again when the user changes. On sign-out call `identifyUser({ id: null, email: null })` — an explicit `null` clears the attribute, while omitting the key leaves the previous value stamped on later spans, which is how one person's session ends up labelled as another's.
+Pass names too, not only ids: `user.id` and `org.id` are unreadable in a list of traces, and turning one back into a person or a customer is the first step of every lookup. `id`, `email`, `name`, `orgId`, `orgName` become the conventional `user.*` / `org.*` attributes; anything else passes through under the key you wrote.
+
+The first batch of spans waits up to three seconds for the resolver, so the page-load spans carry the person too. Nothing to do — but don't work around a delay you see in `debug` output.
+
+Then `identifyUser` for every later change — a sign-in, a workspace switch, sign-out — on the same path the app already tells its other analytics SDK:
+
+```ts
+identifyUser({ id: user.id, orgId: user.orgId, plan: user.plan });
+identifyUser({ id: null, email: null, orgId: null });  // signed out
+```
+
+An explicit `null` clears the attribute; **omitting the key leaves the previous value stamped on later spans.** That is how someone who leaves a workspace stays tagged with it, and how one person's session ends up labelled as another's. Mount that call above any auth gate — inside the signed-in shell it never runs for the sign-in, onboarding, or error surfaces, which are the ones you most want a name on.
 
 **Don't stamp anything you wouldn't put in a log line.** No tokens, no full addresses, no free text the user typed.
 
@@ -157,7 +172,7 @@ test("RUM starts and connects every backend it was told to", async () => {
 
 Refactor phase 3 so the options live in one exported object — that is what makes this test possible and the only structural change asked for. This test reaches the network; if the repo's unit tests must stay offline, keep the assertions on the options, move the backend loop to a pre-deploy check, and say which you did.
 
-**7b. Identity reaches the spans.** Mock the package; assert `identifyUser` fires on the auth path with the fields you wired, and that sign-out clears them.
+**7b. Identity reaches the spans.** Assert `status.identified` is `true` for a signed-in session — one line, and it fails if the resolver races the session or returns the wrong shape. Then mock the package and assert `identifyUser` fires on the auth path with the fields you wired, and that sign-out passes `null` rather than omitting the keys.
 
 **7c. It boots once, on the client.** Assert the init module is imported exactly once and (Next/Nuxt/SvelteKit) on a client-only path. A grep-shaped test is fine and catches someone adding a second `startRum` in a provider.
 
@@ -168,6 +183,8 @@ Run them. Report the real result — if 7a fails because a backend is unconnecte
 ## 8. Verify in a real browser
 
 Tests are not proof that telemetry arrives. Boot the app, sign in, click something, navigate once. Confirm the session id (`OnePatchRum.sessionId()` with the script bundle, otherwise `debug: true` temporarily). Then ask the user to look in their OnePatch workspace: *"you should see a service called `<service>-web` with `click` and `documentLoad` spans within about ten seconds."* Check the spans carry an environment and a version, not blanks — `service.version: ""` is instrumented but unattributable, and that is only obvious now.
+
+**Read `user.id` off one of those spans, including a `documentLoad` from the very first page.** This is the check we skipped on our own app and paid a week of anonymous telemetry for. A whole session with no `user.*` means the resolver returned `null` — usually a session request that isn't in flight yet at boot, or auth state read from a provider that hasn't mounted. Names on the later spans but not the load ones means something is still calling `identifyUser` instead of passing `user`.
 
 If nothing arrives: a CORS error on the ingest URL means the host is wrong; 401 means the token is; no requests to the ingest URL at all means `startRum` isn't running — server path, or never imported. A `[onepatch/rum]` error names its own fix.
 
@@ -193,7 +210,8 @@ Append, under a `## Browser (RUM)` heading:
 
 | Attribute | Source |
 |---|---|
-| `user.email` | `src/auth/session.ts:41`, on auth state change |
+| `user.id`, `user.email` | `user` resolver at init, `src/rum-config.ts:12` |
+| `org.id`, `org.name` | `identifyUser` on workspace switch, `src/auth/session.ts:41` |
 
 ### Named actions
 
@@ -240,6 +258,7 @@ If they haven't connected GitHub, point them at the onboarding step — the cont
 - **Don't proxy the ingest token.** It is designed to be public.
 - **Don't turn on `captureConsole` by default.** Console lines carry personal data more often than spans do.
 - **Don't set `scrubQueryStrings: true` reflexively.** It reads as the safe choice and usually isn't: it also drops the fragment, so a hash-routed app loses its route and "which page was this?" stops having an answer. Set it when you've looked at the app's real URLs and they carry secrets, not identifiers — and say which way you set it.
+- **Don't reach for `user: "anonymous"` to get past a type error.** It compiles and it ships RUM that can never answer "what did this person do". If the session isn't available synchronously, that is what the resolver form is for.
 - **Don't leave `appVersion` as a placeholder.** `"dev"` in production is worse than nothing: it looks answered.
 - **Don't instrument React Native with this**, leave `debug: true` committed, or call `startRum` inside a React effect without a module-scope guard.
 - **Don't report success without phase 8.** A green test suite and zero spans is the normal way this goes wrong.
