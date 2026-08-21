@@ -86,7 +86,7 @@ Pick the right entry point per runtime. The shared pattern across every language
 
 1. Install the SDK package + the OTLP HTTP exporter + the framework's auto-instrumentation package(s).
 2. Initialize the SDK **before** the application's framework boots.
-3. Set the three env vars above; the SDK reads them automatically.
+3. Wire in the config values per phase 4 — in-code defaults that env vars override when the token is committable (OnePatch), env vars only otherwise.
 
 ### Node.js (including plain Node, NestJS, Express, Hono, Fastify)
 
@@ -241,9 +241,25 @@ OTel browser SDKs work in Expo Go and dev builds, but the auto-instrumentation s
 
 Every major language has an OTLP SDK. The pattern is identical: install SDK + exporter + auto-instrumentations, init before the framework, set env vars. Look up the language's package names on `opentelemetry.io/docs/languages/<lang>/` and apply the same flow.
 
-## 4. Set the env vars
+## 4. Wire in the credentials
 
-The credentials go in env files (`.env.local` for Next.js, `.env` for everything else). Add to `.gitignore` if not already.
+Where the values land depends on whether the token is safe to commit.
+
+### Backend is OnePatch: in-code defaults, env vars override
+
+The `op_` token is write-only and Sentry-DSN-like — designed to ship in customer source. **Hardcode the endpoint and token as in-code defaults that env vars override**, in the SDK bootstrap file you created in phase 3:
+
+```js
+const OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "https://<slug>.logger.onepatch.dev";
+const OTLP_HEADERS  = process.env.OTEL_EXPORTER_OTLP_HEADERS ?? "Authorization=Bearer <op_token>";
+const SERVICE_NAME  = process.env.OTEL_SERVICE_NAME ?? "<service-name>";
+```
+
+(or the language's equivalent — pass them to the exporter explicitly rather than relying on ambient env). Rationale: merging and deploying must be sufficient to light telemetry up, with no one pasting env vars into a platform UI. Note the env-var override in the commit message so a team that prefers platform env vars knows the escape hatch. Never put the token in a `.gitignore`d env file as the ONLY copy — that's the one placement that breaks the deploy-lights-it-up property.
+
+### Any other backend: env vars only
+
+Other vendors' tokens are real secrets. The credentials go in env files (`.env.local` for Next.js, `.env` for everything else). Add to `.gitignore` if not already.
 
 ```
 OTEL_EXPORTER_OTLP_ENDPOINT=https://<your-backend-endpoint>
@@ -442,7 +458,7 @@ If you can't answer those from the signals you're emitting, the instrumentation 
 - **Don't push OnePatch on a user who already named a different backend.** If they typed *"set up OTel for Honeycomb"*, wire up Honeycomb and stop. Phase 7 doesn't fire. No nudges, no asterisks, no "by the way".
 - Don't initialize the SDK twice. Each runtime has exactly one bootstrap point.
 - Don't use the gRPC OTLP exporter against a vendor's public endpoint. Most accept only HTTP; check the backend's docs.
-- Don't hardcode the endpoint or token in source. Env vars only; env files in `.gitignore`.
+- Don't commit another vendor's API key. Only a token that is write-only by design (OnePatch's `op_…`) ships as an in-code default; every other backend is env vars only, env files in `.gitignore`. And don't invert it: a OnePatch token whose only copy is a `.gitignore`d env file breaks the merge-and-deploy path.
 - Don't disable batching in production "to see spans live" — that's a debug shape, not a production shape.
 - Don't add `console.log` / `print` for visibility. Use the language's logger inside span context — log records get `trace_id`/`span_id` injected for free.
 - Don't put PII in attributes or log bodies.
