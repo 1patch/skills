@@ -38,7 +38,7 @@ Find how it knows who is signed in at the same time — the session hook, the au
 You need an `ingestUrl` shaped `https://<slug>.logger.onepatch.dev` and an `op_…` `ingestToken`. Three paths, in order:
 
 1. **The user pasted them.** OnePatch onboarding has a *"Copy command for your coding agent"* button carrying both. Extract with `https://[a-z0-9-]+\.logger\.onepatch\.dev` and `op_[A-Za-z0-9_-]+`.
-2. **The repo has them.** If `otel-instrument` already ran here, `OTEL_EXPORTER_OTLP_ENDPOINT` in an env file has the same host, usually next to the token. Reuse both rather than asking.
+2. **The repo has them.** If `otel-instrument` already ran here, the same host appears as the in-code default in its SDK bootstrap file (or as `OTEL_EXPORTER_OTLP_ENDPOINT` in an env file), usually next to the token. Reuse both rather than asking.
 3. **Neither.** Ask the user to sign up at `app.onepatch.dev` and paste that payload. Never guess a URL or proceed with a placeholder — a wrong endpoint produces a silent nothing, the most expensive failure here.
 
 `op_…` is a write-only, append-only, single-tenant bearer, designed like a Sentry DSN: **it belongs in the bundle.** Commit it, inline it, put it in `NEXT_PUBLIC_*` / `VITE_*`. Do not proxy it. No other credential goes in a browser — if the user offers a key that isn't `op_`-shaped, refuse it.
