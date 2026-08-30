@@ -93,7 +93,7 @@ identifyUser({ id: null, email: null, orgId: null });  // sign-out
 
 Explicit `null` clears an attribute; an omitted key stays stamped on later spans.
 
-Never stamp what you wouldn't log: tokens, full addresses, user-typed free text.
+Never record secrets or PII beyond identity: no tokens, full addresses, or user-typed free text in attributes.
 
 ## 5. `connectTracesTo` — probe before you list
 
@@ -249,11 +249,11 @@ Each item: a challenge, a verification, the evidence that passes. An item you ca
 ## Don't
 
 - **No session replay** — not with this package, not alongside it. If the user wants video, explain what the action list answers and let them decide.
-- **No unprobed `connectTracesTo` entries** — this shortcut costs the customer's API calls, not just data.
+- **No unprobed `connectTracesTo` entries** — an origin whose CORS preflight rejects `traceparent` makes the browser block the application's own requests to it.
 - **Never proxy the ingest token** — it is designed to be public.
 - **No `captureConsole` by default** — console lines carry personal data more often than spans.
 - **No reflexive `scrubQueryStrings: true`** — it also drops the fragment, so a hash-routed app loses its route. Set it after reading the app's real URLs, when they carry secrets rather than identifiers — and say which way you set it.
-- **No `user: "anonymous"` to get past a type error** — the resolver form exists for sessions that aren't synchronous.
-- **No placeholder `appVersion`** — `"dev"` in production looks answered and isn't.
+- **No `user: "anonymous"` to get past a type error** — use the async resolver when the session is not available synchronously; `"anonymous"` is only for apps with no accounts.
+- **No placeholder `appVersion`** — a constant like `"dev"` gives every deploy the same `service.version`, so error-rate changes can't be attributed to a release.
 - **No React Native**, no committed `debug: true`, no `startRum` in a React effect without a module-scope guard.
-- **No success report without phase 8 and the checklist** — a green suite with zero spans is the normal failure.
+- **No success report without phase 8 and the checklist** — a passing test suite does not prove spans are exported; only observing them does.
