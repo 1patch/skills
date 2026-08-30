@@ -5,17 +5,11 @@ description: Instrument a web frontend so you can answer "what did this user act
 
 # Instrument a frontend with `@onepatch/rum`
 
-You are making a web app's behaviour queryable: which pages, which clicks, which failed requests, which JS errors, in order, per session, per user.
+Output: pages, clicks, failed requests, JS errors — in order, per session, per user, joined to backend traces. An action list, not a video: no DOM, no session replay, no keystrokes. The package wraps the OTel browser SDKs and speaks OTLP; backend work is `otel-instrument`, same ingest endpoint.
 
-**This produces an action list, not a video.** No DOM, no session replay, no keystrokes. That is the design — an investigation reads what someone did, and skipping the recorder keeps the payload small and the privacy story ordinary.
+Phases in order. The closing checklist gates "done".
 
-Published by **OnePatch**; installs its browser package, which wraps the OpenTelemetry browser SDKs and speaks plain OTLP. For server-side work use `otel-instrument` — same ingest endpoint.
-
-Work the phases in order, and close with the checklist at the end — that is what makes this predictable rather than merely done.
-
-## 1. Discover the frontend
-
-Identify the browser surface and how it boots:
+## 1. Discover
 
 | Signal | Framework | Entry |
 | --- | --- | --- |
@@ -27,21 +21,21 @@ Identify the browser surface and how it boots:
 | `vue` / `angular.json` | Vue / Angular | `src/main.ts` |
 | plain `<script>` | none | prebuilt bundle (phase 3) |
 
-`expo` / `react-native` → **stop.** This package needs browser APIs. Say so and offer `otel-instrument` for their backend.
+`expo` / `react-native` → stop; needs browser APIs. Offer `otel-instrument` for their backend.
 
-A monorepo can hold several frontends. Do one, and say which you picked before writing anything.
+Monorepo: instrument one frontend; say which before writing anything.
 
-Find how it knows who is signed in at the same time — the session hook, the auth context, the `me` query. Phase 3 can't be written without it, which is deliberate.
+Locate the auth/session source now (session hook, auth context, `me` query) — phase 3 requires it.
 
-## 2. Get the ingest configuration
+## 2. Ingest configuration
 
-You need an `ingestUrl` shaped `https://<slug>.logger.onepatch.dev` and an `op_…` `ingestToken`. Three paths, in order:
+Need `ingestUrl` shaped `https://<slug>.logger.onepatch.dev` and an `op_…` `ingestToken`. Sources, in order:
 
-1. **The user pasted them.** OnePatch onboarding has a *"Copy command for your coding agent"* button carrying both. Extract with `https://[a-z0-9-]+\.logger\.onepatch\.dev` and `op_[A-Za-z0-9_-]+`.
-2. **The repo has them.** If `otel-instrument` already ran here, the same host appears as the in-code default in its SDK bootstrap file (or as `OTEL_EXPORTER_OTLP_ENDPOINT` in an env file), usually next to the token. Reuse both rather than asking.
-3. **Neither.** Ask the user to sign up at `app.onepatch.dev` and paste that payload. Never guess a URL or proceed with a placeholder — a wrong endpoint produces a silent nothing, the most expensive failure here.
+1. User pasted the onboarding payload — extract `https://[a-z0-9-]+\.logger\.onepatch\.dev` and `op_[A-Za-z0-9_-]+`.
+2. Repo already has them — `otel-instrument`'s bootstrap default or `OTEL_EXPORTER_OTLP_ENDPOINT`, token nearby. Reuse.
+3. Neither — ask the user to sign up at `app.onepatch.dev` and paste the payload. Never guess a URL or use a placeholder.
 
-`op_…` is a write-only, append-only, single-tenant bearer, designed like a Sentry DSN: **it belongs in the bundle.** Commit it, inline it, put it in `NEXT_PUBLIC_*` / `VITE_*`. Do not proxy it. No other credential goes in a browser — if the user offers a key that isn't `op_`-shaped, refuse it.
+`op_…` is a write-only, append-only, single-tenant bearer (Sentry-DSN class): commit it, inline it, `NEXT_PUBLIC_*` / `VITE_*`. Never proxy it. Refuse any non-`op_`-shaped key for the browser.
 
 ## 3. Install and initialise
 
@@ -49,75 +43,63 @@ You need an `ingestUrl` shaped `https://<slug>.logger.onepatch.dev` and an `op_�
 bun add @onepatch/rum   # or npm / pnpm / yarn — 0.2.0 or newer
 ```
 
-Placement, three rules: **once** per page load (twice is a warning and a wasted call); **client-side** (it no-ops outside a browser, so a server-rendered import is safe, but the call belongs on a client path); **early**, before the app's own `fetch` calls.
+Call `startRum` **once** per page load, **client-side** (it no-ops off-browser), **early** — before the app's own fetches.
 
-Four values decide whether the data is usable in a month:
-
-- **`user` is who is using the app.** Required — `startRum` will not compile without it, because identity as a second call is a second call somebody forgets. Phase 4 picks its shape; put a resolver in now.
-- **`appName` is `<service>-web`.** If the backend is `acme-api`, this is `acme-web`. It becomes `service.name` — the first column of the sort key and what the service map draws, so an unrelated name files the two halves of one trace in two unrelated places.
-- **`environment` comes from wherever the backend reads its own.** Not a hand-typed `"production"` in a file that gets copied to staging. Disagreeing halves make every env-filtered query return half a trace, and each half looks fine alone.
-- **`appVersion` is the commit sha.** Every build system has one: `NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA`, `VITE_COMMIT_SHA` fed from `$GITHUB_SHA`, `git rev-parse --short HEAD`. It becomes `service.version`, which turns "errors went up at 14:20" into "errors went up on this deploy". No sha available? Wire one in — that is this phase, not a follow-up.
+- `user` — required; identity resolver (phase 4).
+- `appName` — `<service>-web`; becomes `service.name`. Backend `acme-api` ⇒ `acme-web`.
+- `environment` — read from wherever the backend reads its own; never hand-typed.
+- `appVersion` — the commit sha (`NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA`, `VITE_COMMIT_SHA` ← `$GITHUB_SHA`, `git rev-parse --short HEAD`); becomes `service.version`. None available → wire one in now.
 
 ```ts
-// Next.js 15+: instrumentation-client.ts at the project root, which Next runs
-// on the client before hydration. Other frameworks: top of the entry module.
+// Next.js 15+: instrumentation-client.ts at the project root.
+// Other frameworks: top of the entry module.
 import { startRum } from "@onepatch/rum";
 
 startRum({
   ingestUrl: process.env.NEXT_PUBLIC_ONEPATCH_INGEST_URL!,
   ingestToken: process.env.NEXT_PUBLIC_ONEPATCH_INGEST_TOKEN!,
   appName: "<service>-web",
-  // On Vercel these two come free as NEXT_PUBLIC_VERCEL_ENV and
-  // NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA. Elsewhere, define them in the build.
   environment: process.env.NEXT_PUBLIC_APP_ENV!,
   appVersion: process.env.NEXT_PUBLIC_COMMIT_SHA!,
   user: async () => (await getSession())?.user ?? null, // phase 4
-  connectTracesTo: [/* phase 5 decides this — leave it out until then */],
+  connectTracesTo: [/* phase 5 decides — leave out until then */],
 });
 ```
 
-**Next.js 13–14** has no `instrumentation-client.ts`. Use a client component rendered in the root layout, and call `startRum` at module scope behind a `let booted` guard — an effect in a `<StrictMode>` tree runs twice in development.
+Next.js 13–14: client component in the root layout, `startRum` at module scope behind a `let booted` guard (StrictMode double-runs effects in dev).
 
-**No bundler:** load `https://unpkg.com/@onepatch/rum/dist/onepatch-rum.min.js` in `<head>` before the app's own scripts and call `OnePatchRum.startRum({…})`.
+No bundler: `https://unpkg.com/@onepatch/rum/dist/onepatch-rum.min.js` in `<head>` before app scripts; `OnePatchRum.startRum({…})`.
 
-## 4. Wire identity — the highest-value five minutes
+## 4. Identity
 
-A session with no user answers almost nothing, so identity is the `user` option rather than a follow-up call. Find where the app already knows who is signed in — grep for `analytics.identify(`, `posthog.identify(`, `Sentry.setUser(`, `datadogRum.setUser(`, or the auth provider's `onAuthStateChange` / `useUser` / session context — and pass whichever of these three shapes matches what that path can give you at boot:
+Wire from where the app already knows who is signed in — grep `analytics.identify(`, `posthog.identify(`, `Sentry.setUser(`, `datadogRum.setUser(`, or the auth provider's `onAuthStateChange` / `useUser` / session context. Shapes:
 
 ```ts
-user: { id: session.userId, email: session.email }  // already known synchronously
-user: async () => (await me())?.user ?? null        // known shortly; awaited once
-user: "anonymous"                                   // no sign-in exists in this app
+user: { id: session.userId, email: session.email }  // known synchronously
+user: async () => (await me())?.user ?? null        // resolver, awaited once
+user: "anonymous"                                   // only if the app has no accounts at all
 ```
 
-A resolver returning `null` is honest and telemetry still flows — a login page, a cold load before the session request lands. `(await startRum(...)).identified` tells you which happened. Pick `"anonymous"` only for an app with no accounts at all; on a signed-in app it is how you ship RUM with no U in it.
+A resolver returning `null` is fine (login page, cold load); `(await startRum(...)).identified` reports which happened. The first span batch waits up to 3s for the resolver so page-load spans carry the user — don't work around that delay.
 
-Pass names too, not only ids: `user.id` and `org.id` are unreadable in a list of traces, and turning one back into a person or a customer is the first step of every lookup. `id`, `email`, `name`, `orgId`, `orgName` become the conventional `user.*` / `org.*` attributes; anything else passes through under the key you wrote.
+Pass names, not only ids: `id`, `email`, `name`, `orgId`, `orgName` map to `user.*` / `org.*`; other keys pass through as written.
 
-The first batch of spans waits up to three seconds for the resolver, so the page-load spans carry the person too. Nothing to do — but don't work around a delay you see in `debug` output.
-
-Then `identifyUser` for every later change — a sign-in, a workspace switch, sign-out — on the same path the app already tells its other analytics SDK:
+`identifyUser` on every later change — sign-in, workspace switch, sign-out — on the same path the app tells its other analytics, mounted **above** any auth gate:
 
 ```ts
 identifyUser({ id: user.id, orgId: user.orgId, plan: user.plan });
-identifyUser({ id: null, email: null, orgId: null });  // signed out
+identifyUser({ id: null, email: null, orgId: null });  // sign-out
 ```
 
-An explicit `null` clears the attribute; **omitting the key leaves the previous value stamped on later spans.** That is how someone who leaves a workspace stays tagged with it, and how one person's session ends up labelled as another's. Mount that call above any auth gate — inside the signed-in shell it never runs for the sign-in, onboarding, or error surfaces, which are the ones you most want a name on.
+Explicit `null` clears an attribute; an omitted key stays stamped on later spans.
 
-**Don't stamp anything you wouldn't put in a log line.** No tokens, no full addresses, no free text the user typed.
+Never stamp what you wouldn't log: tokens, full addresses, user-typed free text.
 
-## 5. Decide `connectTracesTo` — probe before you list
+## 5. `connectTracesTo` — probe before you list
 
-This is the phase that can break the customer's application.
+Same-origin joins automatically: leave the option out entirely.
 
-Joining a browser span to its backend span means attaching a `traceparent` header. Same-origin requests get it automatically with nothing at risk — **if the API is same-origin, skip this phase and leave `connectTracesTo` out.**
-
-Cross-origin is the hazard. The header makes the request preflighted, and a backend whose `Access-Control-Allow-Headers` doesn't cover `traceparent` makes the browser refuse the request outright. Not untraced — refused.
-
-The library won't let that happen at runtime: it probes each listed origin at startup and connects only those that pass. But it can only report, and a silently unconnected backend should reach the user now, from you. So probe from the terminal too, where the response headers are readable.
-
-Pick a route that **exists** — an API path the frontend really calls. Probing `/` is the standard mistake: it often 404s ahead of the CORS middleware and tells you nothing.
+Cross-origin: `traceparent` forces a preflight, and a backend whose `Access-Control-Allow-Headers` misses it gets its requests **refused**, not merely untraced. The library probes each listed origin at startup and connects only passes, but probe from the terminal too, against a route the frontend really calls (`/` usually 404s ahead of CORS and proves nothing):
 
 ```sh
 curl -s -D - -o /dev/null -X OPTIONS "https://api.acme.com/v1/things" \
@@ -129,36 +111,34 @@ curl -s -D - -o /dev/null -X OPTIONS "https://api.acme.com/v1/things" \
 
 | Response | Verdict |
 | --- | --- |
-| `allow-headers` names `traceparent` | Safe. List the origin. |
-| `allow-headers: *`, `allow-origin: *` | Safe. A wildcard origin can't receive credentialed requests at all, so there are none to break. List it. |
-| `allow-headers: *`, `allow-credentials: true`, `allow-origin` echoed | **Not safe.** A wildcard is illegal for a credentialed request, so cookie-bearing calls carrying `traceparent` are blocked while the same calls without it succeed. Ask for `traceparent` to be named explicitly. |
-| `allow-headers` omits `traceparent` | Not safe. Offer to open a PR widening that backend's CORS. |
-| no `access-control-*` at all | Inconclusive — you probably probed a route that 404s before CORS runs. Find a real one. |
+| `allow-headers` names `traceparent` | Safe — list it. |
+| `allow-headers: *`, `allow-origin: *` | Safe — wildcard origin can't receive credentialed requests, so none can break. |
+| `allow-headers: *`, `allow-credentials: true`, `allow-origin` echoed | **Not safe** — wildcard is illegal for credentialed requests; cookie-bearing calls with `traceparent` get blocked. Ask for `traceparent` named explicitly. |
+| `allow-headers` omits `traceparent` | Not safe — offer a PR widening that backend's CORS. |
+| no `access-control-*` at all | Inconclusive — you probed a route that 404s before CORS. Find a real one. |
 
-List only origins that passed. Never a wildcard: the library rejects `connectTracesTo: ["https://*"]` outright, because it would attach trace headers to every third-party request the page makes — payment provider, CDN, analytics — and any one refusing the header breaks that request.
+List only passing origins. No wildcards (the library rejects them; they'd header every third-party request). Tell the user, one line per origin: joined or not, why; offer the CORS one-liner for the ones that aren't.
 
-Tell the user, one line per origin, which backends are trace-joined and which aren't and why. For the ones that aren't, offer the CORS one-liner for their framework.
+## 6. Named actions
 
-## 6. Name the actions worth naming
-
-Clicks and navigations are captured already, and the click span carries the element and its xpath. What it can't carry is what the click *meant*.
+Clicks and navigations are automatic (element + xpath). Add what the click meant:
 
 ```ts
 recordAction("ran-workflow", { workflowId });
 catch (error) { recordError(error, { where: "checkout" }); }
 ```
 
-Add `recordAction` where the product has its own name for a step — the thing someone would search for. Three to six is right for a first pass; find them at the mutations, the submit handlers, and whatever the product's analytics already tracks. Don't wrap every button. Wrap handled errors that would otherwise vanish.
+3–6 for a first pass: mutations, submit handlers, whatever the product's analytics already tracks. Wrap handled errors that would otherwise vanish. Don't wrap every button.
 
-## 7. Write the tests
+## 7. Tests
 
-Instrumentation fails silently, so it gets tests. Match the repo's existing setup (vitest, jest, bun test). Four, in descending order of what they catch:
+Use the repo's existing runner. Export the options as one object (`src/rum-config.ts`) — the only structural change. Four tests:
 
-**7a. It starts, and every listed backend is connected** — catches a broken endpoint, a bad token shape, a wildcard, and CORS drift:
+**a.** Starts, and every listed backend connects:
 
 ```ts
 import { startRum } from "@onepatch/rum";
-import { rumOptions } from "../src/rum-config"; // export the options so tests can see them
+import { rumOptions } from "../src/rum-config";
 
 test("RUM starts and connects every backend it was told to", async () => {
   const status = await startRum(rumOptions);
@@ -170,33 +150,31 @@ test("RUM starts and connects every backend it was told to", async () => {
 });
 ```
 
-Refactor phase 3 so the options live in one exported object — that is what makes this test possible and the only structural change asked for. This test reaches the network; if the repo's unit tests must stay offline, keep the assertions on the options, move the backend loop to a pre-deploy check, and say which you did.
+Reaches the network. Offline-only suites: assert on the options, move the backend loop to a pre-deploy check, say which you did.
 
-**7b. Identity reaches the spans.** Assert `status.identified` is `true` for a signed-in session — one line, and it fails if the resolver races the session or returns the wrong shape. Then mock the package and assert `identifyUser` fires on the auth path with the fields you wired, and that sign-out passes `null` rather than omitting the keys.
+**b.** `status.identified === true` for a signed-in session. Mock the package: `identifyUser` fires on the auth path with the wired fields; sign-out passes explicit `null`s, not omitted keys.
 
-**7c. It boots once, on the client.** Assert the init module is imported exactly once and (Next/Nuxt/SvelteKit) on a client-only path. A grep-shaped test is fine and catches someone adding a second `startRum` in a provider.
+**c.** Init module imported exactly once, on a client-only path. Grep-shaped is fine.
 
-**7d. No wildcard in `connectTracesTo`.** One line. The library enforces it at runtime; the test makes a well-meaning "match all our subdomains" edit fail in CI instead.
+**d.** No wildcard in `connectTracesTo`.
 
-Run them. Report the real result — if 7a fails because a backend is unconnected, that is the finding, not a test to relax.
+Run them; report the real result. 7a failing on an unconnected backend is the finding, not a test to relax.
 
 ## 8. Verify in a real browser
 
-Tests are not proof that telemetry arrives. Boot the app, sign in, click something, navigate once. Confirm the session id (`OnePatchRum.sessionId()` with the script bundle, otherwise `debug: true` temporarily). Then ask the user to look in their OnePatch workspace: *"you should see a service called `<service>-web` with `click` and `documentLoad` spans within about ten seconds."* Check the spans carry an environment and a version, not blanks — `service.version: ""` is instrumented but unattributable, and that is only obvious now.
+Boot, sign in, click, navigate once. Session id via `OnePatchRum.sessionId()` (script bundle) or temporary `debug: true`. Have the user check their workspace: `<service>-web` with `click` and `documentLoad` spans within ~10s. Confirm environment and version are non-blank.
 
-**Read `user.id` off one of those spans, including a `documentLoad` from the very first page.** This is the check we skipped on our own app and paid a week of anonymous telemetry for. A whole session with no `user.*` means the resolver returned `null` — usually a session request that isn't in flight yet at boot, or auth state read from a provider that hasn't mounted. Names on the later spans but not the load ones means something is still calling `identifyUser` instead of passing `user`.
+Read `user.id` off a `documentLoad` from the very first page. Whole session anonymous → the resolver returned `null` (session request not in flight at boot, or provider not mounted). Names on later spans only → something calls `identifyUser` instead of passing `user`.
 
-If nothing arrives: a CORS error on the ingest URL means the host is wrong; 401 means the token is; no requests to the ingest URL at all means `startRum` isn't running — server path, or never imported. A `[onepatch/rum]` error names its own fix.
+Nothing arrives: CORS error on the ingest URL = wrong host; 401 = wrong token; zero requests to it = `startRum` never ran. A `[onepatch/rum]` error names its own fix.
 
-If a backend was meant to be trace-joined, prove it: trigger a request, find the span, check the backend's span shares the trace id. One end-to-end trace beats any amount of configuration review.
+Trace-joined backend: trigger a request, confirm the FE and BE spans share a trace id.
 
-## 9. Add a browser section to `TELEMETRY.md`
+## 9. `TELEMETRY.md`
 
-**`TELEMETRY.md` at the repo root is the one place a repo describes what it emits** — written by `otel-instrument`, kept fresh by the `telemetry-docs-freshness` monitor, and front-loaded into the agent's context whenever a telemetry skill runs. The browser is another emitter in that repo, so it goes in that file. Don't start a second document; a repo with two telemetry docs has one that's stale.
+One telemetry doc per repo, at the root — written by `otel-instrument`, kept fresh by the `telemetry-docs-freshness` monitor. Append under `## Browser (RUM)`; never start a second document.
 
-A frontend in its own repo gets a browser-only `TELEMETRY.md` — that is complete, not half-written, so don't invent placeholder server sections. The corollary matters more: **when the frontend is a separate repo, the backend's doc will never mention the browser.** Nothing stitches the two together, so the propagation table is the only place the FE↔BE join is written down. Name the backend *services* there, not just origins, so a reader from either side can find the other.
-
-Append, under a `## Browser (RUM)` heading:
+Frontend in its own repo: a browser-only `TELEMETRY.md` is complete — no placeholder server sections. Its propagation table is then the only written FE↔BE join, so name the backend *services* (and repos), not just origins.
 
 ```markdown
 ## Browser (RUM)
@@ -235,10 +213,10 @@ Append, under a `## Browser (RUM)` heading:
 
 No session replay, no DOM, no keystrokes, no form contents. Console capture is off.
 
-URLs are recorded as they are, query string and fragment included, because the query is usually where the URL says which thing. `scrubQueryStrings: true` drops both — set it if these URLs carry reset tokens, magic-link codes or email addresses rather than identifiers.
+URLs are recorded with query string and fragment. `scrubQueryStrings: true` drops both — set it if these URLs carry reset tokens, magic-link codes or email addresses rather than identifiers.
 ```
 
-List only what the code actually emits — walk the real `recordAction` sites, don't copy the examples. `file:line` on every hand-written row. Keep "Not captured"; it's the section a privacy reviewer opens first.
+List only what the code emits — walk the real `recordAction` sites. `file:line` on every hand-written row. Keep "Not captured".
 
 ## 10. Close the loop
 
@@ -249,33 +227,33 @@ List only what the code actually emits — walk the real `recordAction` sites, d
 > - "which pages threw errors in the last hour?"
 > - "show me sessions where checkout failed"
 
-If they haven't connected GitHub, point them at the onboarding step — the context engine reads `TELEMETRY.md` from the repo, and you can't drive that OAuth flow. **If this frontend is its own repo, say so specifically:** connecting the backend repo is not enough.
+GitHub not connected → point at the onboarding step; you can't drive that OAuth flow. Frontend in its own repo → say explicitly that connecting the backend repo is not enough.
 
 ## Before you report done — the checklist
 
-Instrumentation reads as done while silently broken, so the last act is a checklist, aviation style: each item is a challenge, a way to verify it, and the evidence that passes. Run it against the branch you are about to open. An item you can't close is a finding to report, not a row to skip — say which items stayed open and why.
+Each item: a challenge, a verification, the evidence that passes. An item you can't close is a finding to report, not a row to skip.
 
 | # | Challenge | Verify with | Passes when |
 |---|---|---|---|
-| 1 | Ingest accepts the token | `curl -s -o /dev/null -w '%{http_code}' -X POST "<ingestUrl>/v1/traces" -H "Authorization: Bearer <op_…>" -H "content-type: application/json" -d '{"resourceSpans":[]}'` | `2xx`. A `401` is the token, a `404` or DNS failure is the host — stop and fix; nothing later matters until this passes. |
-| 2 | The scrub decision saw the real auth routes | Grep the router for reset / OAuth / SSO / magic-link callbacks: `oobCode`, `?code=`, `token=`, `state=` | Every hit is scrubbed (`scrubQueryStrings` or `ignoreUrls`) or provably credential-free, and `TELEMETRY.md` names the routes you read — not a general claim about the app's URLs. |
-| 3 | Env labels are the backend's own strings | Read the literal `deployment.environment` values the backend emits | Every deploy target of this frontend emits an exact member of that set. A label the backend never emits — or emits for a *different* cluster — fails. |
-| 4 | Non-prod traffic has a deliberate destination | Trace where a localhost or preview session's spans go | Init is prod-gated, or the user has agreed dev sessions ship — distinctly labelled — into the same store. |
-| 5 | Identity survives sign-out and user switch | Exercise logout (and workspace switch, if the app has one) in the running app | Explicit `null`s flow through `identifyUser`, and no storage key carries the previous user's id or org into the next session. |
-| 6 | Tests pass under the repo's own runner | The test command already in `package.json` | Green output, runner named — the one the repo has, not the one you assumed. |
-| 7 | One span carries who, where, which build | Phase 8, in a real browser | `user.id`, environment and `service.version` all non-blank on a first-page `documentLoad`, not only on later spans. |
-| 8 | The trace join is proven, not configured | One API call per origin listed in `connectTracesTo` | The frontend and backend spans share a trace id. |
-| 9 | The user sees it in their workspace | Ask them | They confirm `<service>-web` with spans. Your export succeeding is not this — the data must land where *their* queries read. |
-| 10 | No repo-wide side effects | `git diff` the whole branch | Workarounds (engine checks, pins, config files) are scoped to this change, not blanket switches on the repo. |
+| 1 | Ingest accepts the token | `curl -s -o /dev/null -w '%{http_code}' -X POST "<ingestUrl>/v1/traces" -H "Authorization: Bearer <op_…>" -H "content-type: application/json" -d '{"resourceSpans":[]}'` | `2xx`. `401` = token, `404`/DNS = host. Fix before anything else. |
+| 2 | The scrub decision saw the real auth routes | Grep the router for reset / OAuth / SSO / magic-link callbacks: `oobCode`, `?code=`, `token=`, `state=` | Every hit scrubbed (`scrubQueryStrings` or `ignoreUrls`) or provably credential-free; `TELEMETRY.md` names the routes you read. |
+| 3 | Env labels are the backend's own strings | Read the literal `deployment.environment` values the backend emits | Every deploy target emits an exact member of that set — never a label the backend doesn't emit, or emits for a different cluster. |
+| 4 | Non-prod traffic has a deliberate destination | Trace where a localhost or preview session's spans go | Init is prod-gated, or the user agreed dev sessions ship, distinctly labelled. |
+| 5 | Identity survives sign-out and user switch | Exercise logout (and workspace switch) in the running app | Explicit `null`s flow through `identifyUser`; no storage key carries the previous user's id or org into the next session. |
+| 6 | Tests pass under the repo's own runner | The test command already in `package.json` | Green output, runner named. |
+| 7 | One span carries who, where, which build | Phase 8, real browser | `user.id`, environment, `service.version` all non-blank on a first-page `documentLoad`. |
+| 8 | The trace join is proven, not configured | One API call per origin in `connectTracesTo` | FE and BE spans share a trace id. |
+| 9 | The user sees it in their workspace | Ask them | They confirm `<service>-web` with spans — where *their* queries read, not just an export that returned 200. |
+| 10 | No repo-wide side effects | `git diff` the whole branch | Workarounds (engine checks, pins, config files) scoped to this change, not blanket switches. |
 
 ## Don't
 
-- **Don't add session replay.** Not with this package, not alongside it. If the user wants a video, explain what the action list answers and let them decide; don't quietly install a recorder.
-- **Don't list `connectTracesTo` entries without probing.** Every other shortcut here costs data. This one costs the customer's API calls.
-- **Don't proxy the ingest token.** It is designed to be public.
-- **Don't turn on `captureConsole` by default.** Console lines carry personal data more often than spans do.
-- **Don't set `scrubQueryStrings: true` reflexively.** It reads as the safe choice and usually isn't: it also drops the fragment, so a hash-routed app loses its route and "which page was this?" stops having an answer. Set it when you've looked at the app's real URLs and they carry secrets, not identifiers — and say which way you set it.
-- **Don't reach for `user: "anonymous"` to get past a type error.** It compiles and it ships RUM that can never answer "what did this person do". If the session isn't available synchronously, that is what the resolver form is for.
-- **Don't leave `appVersion` as a placeholder.** `"dev"` in production is worse than nothing: it looks answered.
-- **Don't instrument React Native with this**, leave `debug: true` committed, or call `startRum` inside a React effect without a module-scope guard.
-- **Don't report success without phase 8 and the checklist.** A green test suite and zero spans is the normal way this goes wrong.
+- **No session replay** — not with this package, not alongside it. If the user wants video, explain what the action list answers and let them decide.
+- **No unprobed `connectTracesTo` entries** — this shortcut costs the customer's API calls, not just data.
+- **Never proxy the ingest token** — it is designed to be public.
+- **No `captureConsole` by default** — console lines carry personal data more often than spans.
+- **No reflexive `scrubQueryStrings: true`** — it also drops the fragment, so a hash-routed app loses its route. Set it after reading the app's real URLs, when they carry secrets rather than identifiers — and say which way you set it.
+- **No `user: "anonymous"` to get past a type error** — the resolver form exists for sessions that aren't synchronous.
+- **No placeholder `appVersion`** — `"dev"` in production looks answered and isn't.
+- **No React Native**, no committed `debug: true`, no `startRum` in a React effect without a module-scope guard.
+- **No success report without phase 8 and the checklist** — a green suite with zero spans is the normal failure.
