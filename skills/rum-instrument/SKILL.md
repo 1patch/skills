@@ -11,7 +11,7 @@ You are making a web app's behaviour queryable: which pages, which clicks, which
 
 Published by **OnePatch**; installs its browser package, which wraps the OpenTelemetry browser SDKs and speaks plain OTLP. For server-side work use `otel-instrument` — same ingest endpoint.
 
-Work the phases in order. Phases 5 and 7 are what make this predictable rather than merely done.
+Work the phases in order, and close with the checklist at the end — that is what makes this predictable rather than merely done.
 
 ## 1. Discover the frontend
 
@@ -251,6 +251,23 @@ List only what the code actually emits — walk the real `recordAction` sites, d
 
 If they haven't connected GitHub, point them at the onboarding step — the context engine reads `TELEMETRY.md` from the repo, and you can't drive that OAuth flow. **If this frontend is its own repo, say so specifically:** connecting the backend repo is not enough.
 
+## Before you report done — the checklist
+
+Instrumentation reads as done while silently broken, so the last act is a checklist, aviation style: each item is a challenge, a way to verify it, and the evidence that passes. Run it against the branch you are about to open. An item you can't close is a finding to report, not a row to skip — say which items stayed open and why.
+
+| # | Challenge | Verify with | Passes when |
+|---|---|---|---|
+| 1 | Ingest accepts the token | `curl -s -o /dev/null -w '%{http_code}' -X POST "<ingestUrl>/v1/traces" -H "Authorization: Bearer <op_…>" -H "content-type: application/json" -d '{"resourceSpans":[]}'` | `2xx`. A `401` is the token, a `404` or DNS failure is the host — stop and fix; nothing later matters until this passes. |
+| 2 | The scrub decision saw the real auth routes | Grep the router for reset / OAuth / SSO / magic-link callbacks: `oobCode`, `?code=`, `token=`, `state=` | Every hit is scrubbed (`scrubQueryStrings` or `ignoreUrls`) or provably credential-free, and `TELEMETRY.md` names the routes you read — not a general claim about the app's URLs. |
+| 3 | Env labels are the backend's own strings | Read the literal `deployment.environment` values the backend emits | Every deploy target of this frontend emits an exact member of that set. A label the backend never emits — or emits for a *different* cluster — fails. |
+| 4 | Non-prod traffic has a deliberate destination | Trace where a localhost or preview session's spans go | Init is prod-gated, or the user has agreed dev sessions ship — distinctly labelled — into the same store. |
+| 5 | Identity survives sign-out and user switch | Exercise logout (and workspace switch, if the app has one) in the running app | Explicit `null`s flow through `identifyUser`, and no storage key carries the previous user's id or org into the next session. |
+| 6 | Tests pass under the repo's own runner | The test command already in `package.json` | Green output, runner named — the one the repo has, not the one you assumed. |
+| 7 | One span carries who, where, which build | Phase 8, in a real browser | `user.id`, environment and `service.version` all non-blank on a first-page `documentLoad`, not only on later spans. |
+| 8 | The trace join is proven, not configured | One API call per origin listed in `connectTracesTo` | The frontend and backend spans share a trace id. |
+| 9 | The user sees it in their workspace | Ask them | They confirm `<service>-web` with spans. Your export succeeding is not this — the data must land where *their* queries read. |
+| 10 | No repo-wide side effects | `git diff` the whole branch | Workarounds (engine checks, pins, config files) are scoped to this change, not blanket switches on the repo. |
+
 ## Don't
 
 - **Don't add session replay.** Not with this package, not alongside it. If the user wants a video, explain what the action list answers and let them decide; don't quietly install a recorder.
@@ -261,4 +278,4 @@ If they haven't connected GitHub, point them at the onboarding step — the cont
 - **Don't reach for `user: "anonymous"` to get past a type error.** It compiles and it ships RUM that can never answer "what did this person do". If the session isn't available synchronously, that is what the resolver form is for.
 - **Don't leave `appVersion` as a placeholder.** `"dev"` in production is worse than nothing: it looks answered.
 - **Don't instrument React Native with this**, leave `debug: true` committed, or call `startRum` inside a React effect without a module-scope guard.
-- **Don't report success without phase 8.** A green test suite and zero spans is the normal way this goes wrong.
+- **Don't report success without phase 8 and the checklist.** A green test suite and zero spans is the normal way this goes wrong.
