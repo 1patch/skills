@@ -125,11 +125,22 @@ Create `instrumentation.ts` at the project root (same level as `next.config.js`)
 ```ts
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
-    const { registerOTel } = await import("@vercel/otel");
-    registerOTel({ serviceName: process.env.OTEL_SERVICE_NAME ?? "next-app" });
+    const { registerOTel, OTLPHttpProtoTraceExporter } = await import("@vercel/otel");
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT; // root URL, no /v1/... suffix
+    registerOTel({
+      serviceName: process.env.OTEL_SERVICE_NAME ?? "next-app",
+      traceExporter: new OTLPHttpProtoTraceExporter({
+        url: `${endpoint}/v1/traces`,
+        headers: parseOtlpHeaders(process.env.OTEL_EXPORTER_OTLP_HEADERS),
+      }),
+    });
   }
 }
 ```
+
+(`parseOtlpHeaders` splits the standard comma-separated `k=v` header format into an object.)
+
+`traceExporter` must be explicit: `@vercel/otel` silently drops the env-configured auto exporter's spans when the Vercel project has a trace drain; an explicit exporter runs alongside Vercel's.
 
 Next.js 14+ runs `instrumentation.ts` automatically. For 13.x, also add `experimental.instrumentationHook: true` to `next.config.js`.
 
@@ -275,6 +286,7 @@ For deployments (Vercel, Render, Fly, Railway, AWS, etc.), set the same values i
 1. Boot the service (`npm run dev`, `python manage.py runserver`, etc.).
 2. Trigger one obvious code path — hit a route, run a CLI command.
 3. Ask the user to check their observability backend's UI / API: *"You should see a span named `<METHOD> <route>` (or similar) within ~10 seconds."*
+4. Check every `service.name` you wired (browser arriving ≠ server exporting).
 
 If nothing lands:
 
