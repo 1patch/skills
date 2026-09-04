@@ -140,7 +140,7 @@ export async function register() {
 
 (`parseOtlpHeaders` splits the standard comma-separated `k=v` header format into an object.)
 
-**Always pass `traceExporter` explicitly on Vercel — never rely on `@vercel/otel` reading `OTEL_EXPORTER_OTLP_*` itself.** An env-configured exporter is the library's "auto" path, and on a Vercel project with a trace drain or Vercel's own OTel collector enabled that path is skipped for every span: no error, nothing above a debug log, the browser half keeps working, and the server side is silently dark (verified in `@vercel/otel` 2.1.2 — the guard reads the project's `telemetry.traceDrains`). An explicit exporter runs alongside Vercel's own, so Vercel keeps receiving everything and your backend receives it too.
+Pass `traceExporter` explicitly: when the Vercel project has a trace drain, `@vercel/otel` silently drops every span from an exporter it built from `OTEL_EXPORTER_OTLP_*`. An explicit one exports regardless, alongside Vercel's own.
 
 Next.js 14+ runs `instrumentation.ts` automatically. For 13.x, also add `experimental.instrumentationHook: true` to `next.config.js`.
 
@@ -286,7 +286,7 @@ For deployments (Vercel, Render, Fly, Railway, AWS, etc.), set the same values i
 1. Boot the service (`npm run dev`, `python manage.py runserver`, etc.).
 2. Trigger one obvious code path — hit a route, run a CLI command.
 3. Ask the user to check their observability backend's UI / API: *"You should see a span named `<METHOD> <route>` (or similar) within ~10 seconds."*
-4. Check **every `service.name` you wired**, not "any data": a Next.js app emits a server service and a browser one, and browser spans arriving proves nothing about the server exporter (see the Next.js note above — that exact split is what a silently dropped server exporter looks like).
+4. Check every `service.name` you wired, not "any data" — browser spans arriving say nothing about the server exporter.
 
 If nothing lands:
 
