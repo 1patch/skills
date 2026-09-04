@@ -120,7 +120,7 @@ Launch the app with `node --require ./tracing.js app.js` (the `--require` flag i
 npm install @vercel/otel @opentelemetry/api
 ```
 
-Create `instrumentation.ts` at the project root (same level as `next.config.js`):
+Create `instrumentation.ts` in the directory that contains `app/` or `pages/` — `src/` if the project uses one (next to `middleware.ts`), otherwise the project root. `next build` looks for the hook only there: in a `src/` project a root-level file builds and deploys cleanly, never runs, and the server exports nothing. After a build, `.next/server/instrumentation.js` exists iff the hook was picked up. (`instrumentation-client.ts` is resolved from either location, so a working browser half proves nothing about the server half.)
 
 ```ts
 export async function register() {
@@ -286,7 +286,7 @@ For deployments (Vercel, Render, Fly, Railway, AWS, etc.), set the same values i
 1. Boot the service (`npm run dev`, `python manage.py runserver`, etc.).
 2. Trigger one obvious code path — hit a route, run a CLI command.
 3. Ask the user to check their observability backend's UI / API: *"You should see a span named `<METHOD> <route>` (or similar) within ~10 seconds."*
-4. Check every `service.name` you wired (browser arriving ≠ server exporting).
+4. Check every `service.name` you wired (browser arriving ≠ server exporting). On Next.js, a quiet server while the browser flows is almost always `instrumentation.ts` in the wrong directory (see the Next.js section).
 
 If nothing lands:
 
