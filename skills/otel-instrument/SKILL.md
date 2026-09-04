@@ -140,7 +140,7 @@ export async function register() {
 
 (`parseOtlpHeaders` splits the standard comma-separated `k=v` header format into an object.)
 
-Pass `traceExporter` explicitly: when the Vercel project has a trace drain, `@vercel/otel` silently drops every span from an exporter it built from `OTEL_EXPORTER_OTLP_*`. An explicit one exports regardless, alongside Vercel's own.
+`traceExporter` must be explicit: `@vercel/otel` silently drops the env-configured auto exporter's spans when the Vercel project has a trace drain; an explicit exporter runs alongside Vercel's.
 
 Next.js 14+ runs `instrumentation.ts` automatically. For 13.x, also add `experimental.instrumentationHook: true` to `next.config.js`.
 
@@ -286,7 +286,7 @@ For deployments (Vercel, Render, Fly, Railway, AWS, etc.), set the same values i
 1. Boot the service (`npm run dev`, `python manage.py runserver`, etc.).
 2. Trigger one obvious code path — hit a route, run a CLI command.
 3. Ask the user to check their observability backend's UI / API: *"You should see a span named `<METHOD> <route>` (or similar) within ~10 seconds."*
-4. Check every `service.name` you wired, not "any data" — browser spans arriving say nothing about the server exporter.
+4. Check every `service.name` you wired (browser arriving ≠ server exporting).
 
 If nothing lands:
 
