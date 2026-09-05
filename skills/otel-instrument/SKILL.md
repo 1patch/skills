@@ -246,7 +246,69 @@ Init in `main()`, then `#[tracing::instrument]` your handler functions. The OTLP
 
 ### Expo / React Native
 
-OTel browser SDKs work in Expo Go and dev builds, but the auto-instrumentation surface is thin (no `XMLHttpRequest` patching by default; `fetch` only). Pragmatic v0: hand-emit spans for the few network calls that matter, point at the user's backend's HTTP endpoint, and ship server-side instrumentation in your API. Don't try to instrument every component render.
+`@onepatch/rum` is browser-only (`rum-instrument` sends you here). The plain OTel JS SDK runs in Expo Go, dev builds, and store builds — Metro resolves each package's `browser` build, whose exporter transport is `fetch`.
+
+```sh
+npx expo install @opentelemetry/api @opentelemetry/core @opentelemetry/resources \
+  @opentelemetry/semantic-conventions @opentelemetry/sdk-trace-base \
+  @opentelemetry/exporter-trace-otlp-http @opentelemetry/instrumentation \
+  @opentelemetry/instrumentation-fetch
+```
+
+One module, `telemetry.ts`, imported FIRST in the app entry — before React, before the router. Expo Router boots from `"main": "expo-router/entry"`; point `main` at an `index.js` that does `import "./telemetry"; import "expo-router/entry";`.
+
+```ts
+// RN's `performance` has no `timeOrigin`; @opentelemetry/core 2.x reads it per
+// span to compute end times, so without this every span ends at NaN. Read
+// lazily, so ES import hoisting is fine — it only has to run before the first span.
+if (typeof performance.timeOrigin !== "number") {
+  Object.defineProperty(performance, "timeOrigin", { value: Date.now() - performance.now() });
+}
+import { Platform } from "react-native";
+import { trace } from "@opentelemetry/api";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
+
+const provider = new BasicTracerProvider({
+  resource: resourceFromAttributes({
+    [ATTR_SERVICE_NAME]: "<service>-mobile",
+    [ATTR_SERVICE_VERSION]: "<nativeApplicationVersion from expo-application, or app.json version>",
+    "deployment.environment.name": __DEV__ ? "development" : "<Updates.channel or 'production'>",
+    "os.name": Platform.OS,
+  }),
+  spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: `${endpoint}/v1/traces`, headers }))],
+});
+trace.setGlobalTracerProvider(provider);
+// Routes whose query strings carry secrets — read from the app's real auth flows.
+const SECRET_QUERY_ROUTES: RegExp[] = [];
+registerInstrumentations({
+  instrumentations: [
+    new FetchInstrumentation({
+      // Required: RN has no `location`, so the SDK's same-origin shortcut never
+      // matches — without this list no traceparent is sent and nothing joins.
+      propagateTraceHeaderCorsUrls: [/^https:\/\/api\.example\.com/],
+      // The exporter calls the patched `fetch`; without this every export is a span.
+      ignoreUrls: [endpoint],
+      // Runs before the span ends, so `url.full` can be overwritten on secret-bearing routes.
+      applyCustomAttributesOnSpan: (span, request) => {
+        const raw = typeof request === "string" ? request : request instanceof Request ? request.url : String(request);
+        if (SECRET_QUERY_ROUTES.some((re) => re.test(raw))) {
+          const u = new URL(raw); u.search = ""; u.hash = "";
+          span.setAttribute("url.full", `${u.href}?<scrubbed>`);
+        }
+      },
+    }),
+  ],
+});
+```
+
+`endpoint`/`headers` come from phase 4 (the `EXPO_PUBLIC_*` prefix is what Expo inlines at build). Only the fetch instrumentation — RN implements `fetch` on `XMLHttpRequest`, so adding `instrumentation-xml-http-request` counts every request twice. Crashes: `@opentelemetry/sdk-logs` + `exporter-logs-otlp-http` behind `ErrorUtils.setGlobalHandler` — one record with `exception.*` and `error.fatal`, `forceFlush()`, then the previous handler. One span `screen <route>` per navigation; nothing per component render. Verify with a dev run (`npx expo start`) — it exports exactly like a release, labeled `development`.
+
+Sensitive attributes: `url.full` is recorded with query string and fragment. Grep the API client and auth flows for `token=`, `code=`, `state=`, `oobCode`, `email=`, magic-link and OAuth callbacks; every hit goes in `SECRET_QUERY_ROUTES` (scrubbed) or `ignoreUrls` (no span), or is provably credential-free — no reflexive scrub-everything, query identifiers are route identity. Never add `requestHook`/`responseHook` for headers or bodies. `exception.message` is the raw error text: if the app interpolates user data into messages, truncate or map to the error class first. `enduser.id` is the id the app already sends to its own analytics, never email, name, or phone. Record each decision in `TELEMETRY.md`.
 
 ### Anything else (PHP, Elixir, etc.)
 

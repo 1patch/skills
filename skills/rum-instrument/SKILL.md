@@ -21,7 +21,7 @@ Phases in order. The closing checklist gates "done".
 | `vue` / `angular.json` | Vue / Angular | `src/main.ts` |
 | plain `<script>` | none | prebuilt bundle (phase 3) |
 
-`expo` / `react-native` → stop; needs browser APIs. Offer `otel-instrument` for their backend.
+`expo` / `react-native` → not this skill: `@onepatch/rum` wraps the browser SDK and needs `document` (React Native defines `window`, so `startRum` throws instead of no-opping). The app is still instrumentable — wire the OTel JS SDK directly per `otel-instrument` § Expo / React Native, and `otel-instrument` for their backend.
 
 Monorepo: instrument one frontend; say which before writing anything.
 
@@ -255,5 +255,5 @@ Each item: a challenge, a verification, the evidence that passes. An item you ca
 - **No reflexive `scrubQueryStrings: true`** — it also drops the fragment, so a hash-routed app loses its route. Set it after reading the app's real URLs, when they carry secrets rather than identifiers — and say which way you set it.
 - **No `user: "anonymous"` to get past a type error** — use the async resolver when the session is not available synchronously; `"anonymous"` is only for apps with no accounts.
 - **No placeholder `appVersion`** — a constant like `"dev"` gives every deploy the same `service.version`, so error-rate changes can't be attributed to a release.
-- **No React Native**, no committed `debug: true`, no `startRum` in a React effect without a module-scope guard.
+- **No `@onepatch/rum` in React Native** (`otel-instrument` § Expo / React Native wires it instead), no committed `debug: true`, no `startRum` in a React effect without a module-scope guard.
 - **No success report without phase 8 and the checklist** — a passing test suite does not prove spans are exported; only observing them does.
