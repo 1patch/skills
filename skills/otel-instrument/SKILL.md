@@ -283,18 +283,32 @@ const provider = new BasicTracerProvider({
   spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: `${endpoint}/v1/traces`, headers }))],
 });
 trace.setGlobalTracerProvider(provider);
+// Routes whose query strings carry secrets — read from the app's real auth flows.
+const SECRET_QUERY_ROUTES: RegExp[] = [];
 registerInstrumentations({
   instrumentations: [
     new FetchInstrumentation({
       // Required: RN has no `location`, so the SDK's same-origin shortcut never
       // matches — without this list no traceparent is sent and nothing joins.
       propagateTraceHeaderCorsUrls: [/^https:\/\/api\.example\.com/],
+      // The exporter calls the patched `fetch`; without this every export is a span.
+      ignoreUrls: [endpoint],
+      // Runs before the span ends, so `url.full` can be overwritten on secret-bearing routes.
+      applyCustomAttributesOnSpan: (span, request) => {
+        const raw = typeof request === "string" ? request : request instanceof Request ? request.url : String(request);
+        if (SECRET_QUERY_ROUTES.some((re) => re.test(raw))) {
+          const u = new URL(raw); u.search = ""; u.hash = "";
+          span.setAttribute("url.full", `${u.href}?<scrubbed>`);
+        }
+      },
     }),
   ],
 });
 ```
 
 `endpoint`/`headers` come from phase 4 (the `EXPO_PUBLIC_*` prefix is what Expo inlines at build). Only the fetch instrumentation — RN implements `fetch` on `XMLHttpRequest`, so adding `instrumentation-xml-http-request` counts every request twice. Crashes: `@opentelemetry/sdk-logs` + `exporter-logs-otlp-http` behind `ErrorUtils.setGlobalHandler` — one record with `exception.*` and `error.fatal`, `forceFlush()`, then the previous handler. One span `screen <route>` per navigation; nothing per component render. Verify with a dev run (`npx expo start`) — it exports exactly like a release, labeled `development`.
+
+Sensitive attributes: `url.full` is recorded with query string and fragment. Grep the API client and auth flows for `token=`, `code=`, `state=`, `oobCode`, `email=`, magic-link and OAuth callbacks; every hit goes in `SECRET_QUERY_ROUTES` (scrubbed) or `ignoreUrls` (no span), or is provably credential-free — no reflexive scrub-everything, query identifiers are route identity. Never add `requestHook`/`responseHook` for headers or bodies. `exception.message` is the raw error text: if the app interpolates user data into messages, truncate or map to the error class first. `enduser.id` is the id the app already sends to its own analytics, never email, name, or phone. Record each decision in `TELEMETRY.md`.
 
 ### Anything else (PHP, Elixir, etc.)
 
