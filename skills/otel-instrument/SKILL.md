@@ -246,7 +246,55 @@ Init in `main()`, then `#[tracing::instrument]` your handler functions. The OTLP
 
 ### Expo / React Native
 
-OTel browser SDKs work in Expo Go and dev builds, but the auto-instrumentation surface is thin (no `XMLHttpRequest` patching by default; `fetch` only). Pragmatic v0: hand-emit spans for the few network calls that matter, point at the user's backend's HTTP endpoint, and ship server-side instrumentation in your API. Don't try to instrument every component render.
+`@onepatch/rum` is browser-only (`rum-instrument` sends you here). The plain OTel JS SDK runs in Expo Go, dev builds, and store builds — Metro resolves each package's `browser` build, whose exporter transport is `fetch`.
+
+```sh
+npx expo install @opentelemetry/api @opentelemetry/core @opentelemetry/resources \
+  @opentelemetry/semantic-conventions @opentelemetry/sdk-trace-base \
+  @opentelemetry/exporter-trace-otlp-http @opentelemetry/instrumentation \
+  @opentelemetry/instrumentation-fetch
+```
+
+One module, `telemetry.ts`, imported FIRST in the app entry — before React, before the router. Expo Router boots from `"main": "expo-router/entry"`; point `main` at an `index.js` that does `import "./telemetry"; import "expo-router/entry";`.
+
+```ts
+// RN's `performance` has no `timeOrigin`; @opentelemetry/core 2.x derives every
+// span end time from it, so without this every span ends at NaN. Keep it above
+// every @opentelemetry import.
+if (typeof performance.timeOrigin !== "number") {
+  Object.defineProperty(performance, "timeOrigin", { value: Date.now() - performance.now() });
+}
+import { Platform } from "react-native";
+import { trace } from "@opentelemetry/api";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
+
+const provider = new BasicTracerProvider({
+  resource: resourceFromAttributes({
+    [ATTR_SERVICE_NAME]: "<service>-mobile",
+    [ATTR_SERVICE_VERSION]: "<nativeApplicationVersion from expo-application, or app.json version>",
+    "deployment.environment.name": __DEV__ ? "development" : "<Updates.channel or 'production'>",
+    "os.name": Platform.OS,
+  }),
+  spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: `${endpoint}/v1/traces`, headers }))],
+});
+trace.setGlobalTracerProvider(provider);
+registerInstrumentations({
+  instrumentations: [
+    new FetchInstrumentation({
+      // Required: RN has no `location`, so the SDK's same-origin shortcut never
+      // matches — without this list no traceparent is sent and nothing joins.
+      propagateTraceHeaderCorsUrls: [/^https:\/\/api\.example\.com/],
+    }),
+  ],
+});
+```
+
+`endpoint`/`headers` come from phase 4 (the `EXPO_PUBLIC_*` prefix is what Expo inlines at build). Only the fetch instrumentation — RN implements `fetch` on `XMLHttpRequest`, so adding `instrumentation-xml-http-request` counts every request twice. Crashes: `@opentelemetry/sdk-logs` + `exporter-logs-otlp-http` behind `ErrorUtils.setGlobalHandler` — one record with `exception.*` and `error.fatal`, `forceFlush()`, then the previous handler. One span `screen <route>` per navigation; nothing per component render. Verify with a dev run (`npx expo start`) — it exports exactly like a release, labeled `development`.
 
 ### Anything else (PHP, Elixir, etc.)
 
