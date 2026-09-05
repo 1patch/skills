@@ -294,7 +294,7 @@ registerInstrumentations({
 });
 ```
 
-`endpoint`/`headers` come from phase 4 (the `EXPO_PUBLIC_*` prefix is what Expo inlines at build). Only the fetch instrumentation — RN implements `fetch` on `XMLHttpRequest`, so adding `instrumentation-xml-http-request` counts every request twice. Crashes: `@opentelemetry/sdk-logs` + `exporter-logs-otlp-http` behind `ErrorUtils.setGlobalHandler` — one record with `exception.*` and `error.fatal`, `forceFlush()`, then the previous handler. One span `screen <route>` per navigation; nothing per component render. JS cannot see native crashes or ANRs — say so; Embrace's React Native SDK (OTel-based, OTLP export, needs a dev build) is the upgrade for that, not part of this step. Verify with a dev run (`npx expo start`) — it exports exactly like a release, labeled `development`.
+`endpoint`/`headers` come from phase 4 (the `EXPO_PUBLIC_*` prefix is what Expo inlines at build). Only the fetch instrumentation — RN implements `fetch` on `XMLHttpRequest`, so adding `instrumentation-xml-http-request` counts every request twice. Crashes: `@opentelemetry/sdk-logs` + `exporter-logs-otlp-http` behind `ErrorUtils.setGlobalHandler` — one record with `exception.*` and `error.fatal`, `forceFlush()`, then the previous handler. One span `screen <route>` per navigation; nothing per component render. Verify with a dev run (`npx expo start`) — it exports exactly like a release, labeled `development`.
 
 ### Anything else (PHP, Elixir, etc.)
 
