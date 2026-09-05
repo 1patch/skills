@@ -258,9 +258,9 @@ npx expo install @opentelemetry/api @opentelemetry/core @opentelemetry/resources
 One module, `telemetry.ts`, imported FIRST in the app entry — before React, before the router. Expo Router boots from `"main": "expo-router/entry"`; point `main` at an `index.js` that does `import "./telemetry"; import "expo-router/entry";`.
 
 ```ts
-// RN's `performance` has no `timeOrigin`; @opentelemetry/core 2.x derives every
-// span end time from it, so without this every span ends at NaN. Keep it above
-// every @opentelemetry import.
+// RN's `performance` has no `timeOrigin`; @opentelemetry/core 2.x reads it per
+// span to compute end times, so without this every span ends at NaN. Read
+// lazily, so ES import hoisting is fine — it only has to run before the first span.
 if (typeof performance.timeOrigin !== "number") {
   Object.defineProperty(performance, "timeOrigin", { value: Date.now() - performance.now() });
 }
