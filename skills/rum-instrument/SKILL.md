@@ -40,7 +40,7 @@ Need `ingestUrl` shaped `https://<slug>.logger.onepatch.dev` and an `op_…` `in
 ## 3. Install and initialise
 
 ```sh
-bun add @onepatch/rum   # or npm / pnpm / yarn — 0.5.0 or newer
+bun add @onepatch/rum   # or npm / pnpm / yarn — 0.5.1 or newer
 ```
 
 Call `startRum` **once** per page load, **client-side** (it no-ops off-browser), **early** — before the app's own fetches.
@@ -101,7 +101,7 @@ user: async () => (await me())?.user ?? null        // resolver, awaited once
 user: "anonymous"                                   // only if the app has no accounts at all
 ```
 
-A resolver returning `null` is fine (login page, cold load); `(await startRum(...)).identified` reports which happened. The first span batch waits up to 3s for the resolver so page-load spans carry the user — don't work around that delay.
+A resolver returning `null` means auth has settled with nobody signed in. Keep it pending while auth or the initial `me` query is still loading; do not resolve it to `null` from the first empty React render. The first span batch waits up to 3s for the resolver so page-load spans carry the user. `(await startRum(...)).identified` reports the result.
 
 Pass names, not only ids: `id`, `email`, `name`, `orgId`, `orgName` map to `user.*` / `org.*`; other keys pass through as written.
 
@@ -113,6 +113,10 @@ identifyUser({ id: null, email: null, orgId: null });  // sign-out
 ```
 
 Explicit `null` clears an attribute; an omitted key stays stamped on later spans.
+
+Connect identity updates immediately after `startRum` synchronously initializes tracing. Do not defer the auth listener or its callback registration to `startRum(...).then(...)`: that promise also waits for backend probes, and spans after logout would keep the old identity meanwhile. Version 0.5.1 preserves newer explicit updates when an older initial resolver completes. For lazy initialization, keep React's identity state/resolver module free of runtime SDK imports (type-only imports are fine); register the SDK callback from the lazy initializer and replay the latest state.
+
+Verify loading → signed-in first-page identity, updates arriving before and after lazy startup, and logout/workspace changes while a backend probe or the initial resolver is pending. Inspect the built entry graph to confirm a static identity import did not pull RUM into the initial bundle.
 
 Never record secrets or PII beyond identity: no tokens, full addresses, or user-typed free text in attributes.
 
