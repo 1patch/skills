@@ -25,7 +25,7 @@ Phases in order. The closing checklist gates "done".
 
 Monorepo: instrument one frontend; say which before writing anything.
 
-Locate the auth/session source now (session hook, auth context, `me` query) — phase 3 requires it.
+Locate the auth/session source now (session hook, auth context, `me` query) — phase 3 requires it. Inspect existing browser tracer providers, fetch/XHR/document instrumentation, exporter destinations, URL redaction and the lockfile. Distinguish starting a dynamic import from completing initialization; trace the actual promise/callback order.
 
 ## 2. Ingest configuration
 
@@ -40,7 +40,7 @@ Need `ingestUrl` shaped `https://<slug>.logger.onepatch.dev` and an `op_…` `in
 ## 3. Install and initialise
 
 ```sh
-bun add @onepatch/rum   # or npm / pnpm / yarn — 0.2.0 or newer
+bun add @onepatch/rum   # or npm / pnpm / yarn — 0.5.0 or newer
 ```
 
 Call `startRum` **once** per page load, **client-side** (it no-ops off-browser), **early** — before the app's own fetches.
@@ -65,6 +65,27 @@ startRum({
   connectTracesTo: [/* phase 5 decides — leave out until then */],
 });
 ```
+
+### Existing browser OpenTelemetry
+
+Install the actual `@onepatch/rum` package and make it the single browser tracing owner. An additional OnePatch exporter on the old SDK does not install RUM or establish browser sessions. Do not initialize two providers: first registration wins, and duplicate request instrumentation can either double spans or leave the old exporter without traces.
+
+Use `additionalTraceDestinations` (0.5.0+) to preserve the existing trace collector:
+
+```ts
+startRum({
+  // ...the OnePatch, app and identity options above
+  additionalTraceDestinations: [{
+    url: existingTraceEndpoint, // full OTLP HTTP traces URL
+    headers: existingTraceHeaders, // browser-safe, write-only ingest credentials
+  }],
+  redactUrl: existingUrlRedactor, // preserve token/email redaction before ALL exports
+});
+```
+
+Remove the old tracer-provider initialization and the document/fetch/XHR instrumentation RUM replaces. Retain existing log and metric providers, their destinations, useful business-span helpers, credential-bearing route opt-outs and URL exclusions. Helpers using the global OTel API can use RUM's tracer. Preserve an established `service.name`. If the old pipeline retained every page asset, set `assetFloorMs: 0` unless reducing that coverage is intentional.
+
+The SDK excludes additional collector origins automatically; include separate log/metric collector origins in `ignoreUrls` too. Migrate selective redaction through `redactUrl`, including URL paths, `location.href` and previous-route URLs. Verify both destinations receive identical span IDs and sanitization; verify one request produces one request span. If the existing destination cannot use OTLP HTTP, report that concrete integration blocker instead of silently removing it or skipping RUM.
 
 Next.js 13–14: client component in the root layout, `startRum` at module scope behind a `let booted` guard (StrictMode double-runs effects in dev).
 
@@ -128,7 +149,7 @@ recordAction("ran-workflow", { workflowId });
 catch (error) { recordError(error, { where: "checkout" }); }
 ```
 
-3–6 for a first pass: mutations, submit handlers, whatever the product's analytics already tracks. Wrap handled errors that would otherwise vanish. Don't wrap every button.
+Reuse existing meaningful action spans before adding events. For a frontend without them, 3–6 for a first pass: mutations, submit handlers, whatever the product's analytics already tracks. Wrap handled errors that would otherwise vanish. Don't wrap every button.
 
 ## 7. Tests
 
@@ -162,7 +183,7 @@ Run them; report the real result. 7a failing on an unconnected backend is the fi
 
 ## 8. Verify in a real browser
 
-Boot, sign in, click, navigate once. Session id via `OnePatchRum.sessionId()` (script bundle) or temporary `debug: true`. Have the user check their workspace: `<service>-web` with `click` and `documentLoad` spans within ~10s. Confirm environment and version are non-blank.
+Boot, sign in, click, navigate once. Session id via `OnePatchRum.sessionId()` (script bundle) or temporary `debug: true`. Have the user check their workspace: `<service>-web` with `click` and `documentLoad` spans within ~10s. Confirm environment and version are non-blank. Verify page, navigation, action, request and error spans share a browser `session.id` (which may be a resource attribute). A page-load/session-start counter or an AI conversation ID is not a browser session. With an existing collector, also verify matching span IDs at both destinations and one fetch/XHR span per actual request.
 
 Read `user.id` off a `documentLoad` from the very first page. Whole session anonymous → the resolver returned `null` (session request not in flight at boot, or provider not mounted). Names on later spans only → something calls `identifyUser` instead of passing `user`.
 
@@ -236,15 +257,16 @@ Each item: a challenge, a verification, the evidence that passes. An item you ca
 | # | Challenge | Verify with | Passes when |
 |---|---|---|---|
 | 1 | Ingest accepts the token | `curl -s -o /dev/null -w '%{http_code}' -X POST "<ingestUrl>/v1/traces" -H "Authorization: Bearer <op_…>" -H "content-type: application/json" -d '{"resourceSpans":[]}'` | `2xx`. `401` = token, `404`/DNS = host. Fix before anything else. |
-| 2 | The scrub decision saw the real auth routes | Grep the router for reset / OAuth / SSO / magic-link callbacks: `oobCode`, `?code=`, `token=`, `state=` | Every hit scrubbed (`scrubQueryStrings` or `ignoreUrls`) or provably credential-free; `TELEMETRY.md` names the routes you read. |
+| 2 | The scrub decision saw the real auth routes | Grep the router for reset / OAuth / SSO / magic-link callbacks: `oobCode`, `?code=`, `token=`, `state=` | Every hit scrubbed (`redactUrl`, `scrubQueryStrings` or `ignoreUrls`) or provably credential-free; `TELEMETRY.md` names the routes you read. |
 | 3 | Env labels are the backend's own strings | Read the literal `deployment.environment` values the backend emits | Every deploy target emits an exact member of that set — never a label the backend doesn't emit, or emits for a different cluster. |
 | 4 | Non-prod traffic has a deliberate destination | Trace where a localhost or preview session's spans go | Init is prod-gated, or the user agreed dev sessions ship, distinctly labelled. |
 | 5 | Identity survives sign-out and user switch | Exercise logout (and workspace switch) in the running app | Explicit `null`s flow through `identifyUser`; no storage key carries the previous user's id or org into the next session. |
 | 6 | Tests pass under the repo's own runner | The test command already in `package.json` | Green output, runner named. |
-| 7 | One span carries who, where, which build | Phase 8, real browser | `user.id`, environment, `service.version` all non-blank on a first-page `documentLoad`. |
+| 7 | RUM is installed and the journey is connected | Lockfile plus phase 8, real browser | `@onepatch/rum` is installed; first-page identity, environment and version are present; navigation, actions, requests and errors share a browser `session.id`. |
 | 8 | The trace join is proven, not configured | One API call per origin in `connectTracesTo` | FE and BE spans share a trace id. |
 | 9 | The user sees it in their workspace | Ask them | They confirm `<service>-web` with spans — where *their* queries read, not just an export that returned 200. |
-| 10 | No repo-wide side effects | `git diff` the whole branch | Workarounds (engine checks, pins, config files) scoped to this change, not blanket switches. |
+| 10 | Existing trace destinations still receive correct data | One browser journey observed at each configured collector | Same span IDs and URL redaction, one request span per actual fetch/XHR, logs and metrics retained. |
+| 11 | No repo-wide side effects | `git diff` the whole branch | Workarounds (engine checks, pins, config files) scoped to this change, not blanket switches. |
 
 ## Don't
 
